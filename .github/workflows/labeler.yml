@@ -1,0 +1,9 @@
+on:
+  pull_request_target:
+    types: [ opened, reopened, edited, synchronize, ready_for_review, labeled, unlabeled ]
+name: Labeler
+jobs:
+  labeler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: fuxingloh/multi-labeler@v1 

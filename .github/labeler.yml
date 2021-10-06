@@ -1,0 +1,46 @@
+version: v1
+
+labels:
+  - label: "type: feature"
+    sync: true
+    matcher:
+      title: "^feat: .*"
+      commits: "^feat: .*"
+      body: "(\\n|.)*- \\[x\\] feature(\\n|.)*"
+
+  - label: "type: bug"
+    sync: true
+    matcher:
+      title: "^fix: .*"
+      commits: "^fix: .*"
+      body: "(\\n|.)*- \\[x\\] (fix|bug)(\\n|.)*"
+
+  - label: "type: chore"
+    sync: true
+    matcher:
+      title: "^chore: .*"
+      commits: "^chore: .*"
+      body: "(\\n|.)*- \\[x\\] chore(\\n|.)*"
+      files: [ ".github/*" ]
+
+  - label: "type: docs"
+    sync: true
+    matcher:
+      title: "^docs: .*"
+      commits: "^docs: .*"
+      files: [ "*.md", "doc.go" ]
+
+checks:
+  - context: "Semantic Pull Request"
+    url: "https://github.com/Fishwaldo/go-logadapter/blob/master/.github/labeler.yml"
+    description:
+      success: Ready for review & merge.
+      failure: Missing semantic label for merge.
+    labels:
+      any:
+        - 'type: feature'
+        - 'type: bug'
+        - 'type: chore'
+        - 'type: docs'
+        - 'type: maintenance'
+        - 'type: dependencies'
