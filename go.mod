@@ -3,7 +3,7 @@ module github.com/Fishwaldo/restic-nats-server
 go 1.17
 
 require (
-	github.com/Fishwaldo/restic-nats-server/protocol v0.0.0-00010101000000-000000000000
+	github.com/Fishwaldo/restic-nats-server/protocol v0.0.0-20211006110927-dd53a2799284
 	github.com/buraksezer/olric v0.4.0
 	github.com/nats-io/nats.go v1.12.3
 	github.com/pkg/errors v0.9.1
