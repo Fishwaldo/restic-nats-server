@@ -43,4 +43,4 @@ require (
 	gopkg.in/yaml.v2 v2.3.0 // indirect
 )
 
-replace github.com/Fishwaldo/restic-nats-server/protocol => /home/fish/restic-nats-server/protocol
+#replace github.com/Fishwaldo/restic-nats-server/protocol => /home/fish/restic-nats-server/protocol
