@@ -6,7 +6,7 @@ require (
 	github.com/Fishwaldo/go-logadapter v0.0.2
 	github.com/buraksezer/olric v0.4.0
 	github.com/nats-io/nats-server/v2 v2.6.1
-	github.com/nats-io/nats.go v1.12.3
+	github.com/nats-io/nats.go v1.13.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v1.2.1
 	github.com/spf13/viper v1.9.0
