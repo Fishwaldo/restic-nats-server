@@ -1,0 +1,47 @@
+{
+  "loglevel": 2,
+  "authtype": "username",
+  "nats": {
+    "workers": [
+      {
+        "username": "workerid",
+        "password": "workerid"
+      }
+    ],
+    "hosts": [
+      {
+        "username": "host1",
+        "password": "password",
+        "allowedrepo": [
+                "backup",
+                "test"
+        ]
+      },
+      { 
+        "username": "host1",
+        "password": "password",
+        "allowedrepo": [
+                "backup",
+                "test"
+        ]
+      }
+    ]
+  },
+  "worker": {
+    "number": 50,
+    "connecturl": "nats://localhost:4222/",
+    "nkey": "asdfasdf",
+    "credfile": "/home/fish/.nkeys/creds/Operator/Backup/restic.creds",
+    "handles": [
+            "backup",
+            "test"
+    ]
+  },
+  "fsrepo": {
+    "name": "backup",
+    "directory": "/tmp"
+  },
+  "memrepo": {
+    "name": "test"
+  }
+}
