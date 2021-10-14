@@ -10,7 +10,7 @@ var Log logadapter.Logger
 
 func init() {
 	Log = logrus.LogrusDefaultLogger()
-	viper.SetDefault("loglevel", 2)
+	viper.SetDefault("loglevel", logadapter.LOG_DEBUG)
 }
 
 func StartLogger() {

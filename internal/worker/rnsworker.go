@@ -3,43 +3,32 @@ package worker
 import (
 	"context"
 	"io"
-	"io/fs"
 	"net/url"
 	"os"
 	"os/signal"
 	"path"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/Fishwaldo/go-logadapter"
 	"github.com/Fishwaldo/restic-nats-server/internal"
-	"github.com/Fishwaldo/restic-nats-server/internal/cache"
-	"github.com/Fishwaldo/restic-nats-server/internal/natsserver"
-
 	"github.com/Fishwaldo/restic-nats-server/internal/backend/localfs"
-	"github.com/Fishwaldo/restic-nats-server/protocol"
+	"github.com/Fishwaldo/restic-nats-server/internal/cache"
+	"github.com/Fishwaldo/restic-nats-server/internal/client"
+	"github.com/Fishwaldo/restic-nats-server/internal/natsserver"
+	"github.com/nats-io/nats.go"
+
+	"github.com/Fishwaldo/go-logadapter"
+	rns "github.com/Fishwaldo/restic-nats"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 )
 
-type WorkerData struct {
+type Worker struct {
 	ID     int
-	Be     *internal.Backend
 	cancel context.CancelFunc
 	Log    logadapter.Logger
+	Conn   *rns.ResticNatsClient
 }
-
-type workerCfgT struct {
-	NumWorkers int
-	ConnectURL string
-	NKey string
-	Credfile string
-	Backends []string
-}
-
-var WorkerCfg workerCfgT
-
 
 func init() {
 	internal.ConfigRegister("worker", parseConfig, validateConfig)
@@ -48,363 +37,244 @@ func init() {
 	viper.SetDefault("worker.handles", "*")
 }
 
-func parseConfig(cfg *viper.Viper) (error) {
-	WorkerCfg.NumWorkers = cfg.GetInt("number")
-	WorkerCfg.ConnectURL = cfg.GetString("connecturl")
-	WorkerCfg.NKey = cfg.GetString("nkey")
-	WorkerCfg.Credfile = cfg.GetString("credfile")
-	WorkerCfg.Backends = cfg.GetStringSlice("handles")
+func parseConfig(cfg *viper.Viper) error {
+	var err error
+	internal.GlobalState.WorkerConfig.NumWorkers = cfg.GetInt("number")
+	internal.GlobalState.NatsConfig.NatsURL, err = url.Parse(cfg.GetString("connecturl"))
+	if err != nil {
+		return err
+	}
+	internal.GlobalState.NatsConfig.NatsNKey = cfg.GetString("nkey")
+	internal.GlobalState.NatsConfig.NatsCredfile = cfg.GetString("credfile")
+	//WorkerCfg.Backends = cfg.GetStringSlice("handles")
 	return nil
 }
-func validateConfig() (warnings []error, errors error) {
-	internal.Log.Info("%+v\n", WorkerCfg)
-	return nil, nil
+func validateConfig() (warnings []error, err error) {
+	if viper.GetBool("start-nats-server") &&
+		internal.GlobalState.NatsConfig.NatsURL.String() != "" {
+		warnings = append(warnings, errors.New("Using Internal Nats Server. Ignoring Nats Credentials/URL"))
+		url, _ := natsserver.GetInternalWorkerURL()
+		internal.GlobalState.NatsConfig.NatsURL = url
+	} else if viper.GetBool("start-nats-server") {
+		url, _ := natsserver.GetInternalWorkerURL()
+		internal.GlobalState.NatsConfig.NatsURL = url
+	} else {
+		if internal.GlobalState.NatsConfig.NatsURL.User.Username() != "" && internal.GlobalState.NatsConfig.NatsNKey != "" {
+			return nil, errors.New("Cannot Set a Username and Nkey at the same time")
+		}
+		if internal.GlobalState.NatsConfig.NatsURL.User.Username() != "" && internal.GlobalState.NatsConfig.NatsCredfile != "" {
+			return nil, errors.New("Cannot Set a Username and Credential file at the same time")
+		}
+		/* stat the Creds File if it exists */
+		if internal.GlobalState.NatsConfig.NatsCredfile != "" {
+			f, err := os.Open(internal.GlobalState.NatsConfig.NatsCredfile)
+			if err != nil {
+				return nil, errors.Wrap(err, "Cannot find Credential File")
+			}
+			f.Close()
+		}
+
+	}
+	return warnings, nil
 }
 
 func StartWorker() {
-	var url *url.URL
-	if viper.GetBool("start-nats-server") {
-		url, _ = natsserver.GetInternalWorkerURL()
-	} else {
-		url, _ = url.Parse(WorkerCfg.ConnectURL)
-	}
+	var options []rns.RNSOptions
 
-	cfg := internal.Config{
-		Server:     url,
-		//Credential: "/home/fish/.nkeys/creds/Operator/Backup/restic.creds",
+	if internal.GlobalState.NatsConfig.NatsCredfile != "" {
+		options = append(options, rns.WithCredentials(internal.GlobalState.NatsConfig.NatsCredfile))
+	} else if internal.GlobalState.NatsConfig.NatsNKey != "" {
+		//XXX TODO
+		internal.Log.Fatal("NKey Authentication TODO")
 	}
-	var repo string
-	if cfg.Server.Path[0] == '/' {
-		repo = cfg.Server.Path[1:]
-	}
-	if repo[len(repo)-1] == '/' {
-		repo = repo[0 : len(repo)-1]
-	}
-	// replace any further slashes with . to specify a nested queue
-	repo = strings.Replace(repo, "/", ".", -1)
+	options = append(options, rns.WithLogger(internal.Log.New("RNSClient")))
+	host, _ := os.Hostname()
+	options = append(options, rns.WithName(host))
+	options = append(options, rns.WithServer())
 
-	cfg.Repo = repo
+	internal.Log.Debug("Connecting to %s", internal.GlobalState.NatsConfig.NatsURL)
 
-	be := &internal.Backend{
-		Cfg: cfg,
+	conn, err := rns.New(*internal.GlobalState.NatsConfig.NatsURL, options...)
+	if err != nil {
+		internal.Log.Fatal("Cannot Create a new RNS Connection: %s", err)
 	}
-	if err := connectNats(be); err != nil {
-		internal.Log.Fatal("Error Connecting to Nats: %s", err)
-		os.Exit(0)
-	}
+	internal.GlobalState.Conn = conn
 
-	for i :=0; i < WorkerCfg.NumWorkers; i++ {
-		wd := WorkerData{ID: i, Be: be, Log: internal.Log.New("worker").With("ID", i)}
-		be.T.Go(wd.Run);
+	internal.Log.Debug("Connected to Nats Server %s (%s)", conn.Conn.ConnectedServerName(), conn.Conn.ConnectedClusterName())
+
+	/* setup our Subscription for Client Commands */
+	internal.GlobalState.ClientCommand = make(chan *nats.Msg, 5)
+	sub, err := internal.GlobalState.Conn.Conn.ChanQueueSubscribe("repo.Hosts.commands.*", "workerqueue", internal.GlobalState.ClientCommand)
+	if err != nil {
+		internal.Log.Fatal("Cant Setup Client Command Subscription: %s", err)
+		return
+	}
+	internal.GlobalState.ClientCommandSubscription = sub
+
+	for i := 0; i < internal.GlobalState.WorkerConfig.NumWorkers; i++ {
+		wd := Worker{ID: i,
+			Log:  internal.Log.New("worker").With("ID", i),
+			Conn: internal.GlobalState.Conn}
+		internal.GlobalState.T.Go(wd.Run)
 	}
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
 	s := <-signalChan
-	be.T.Kill(nil)
-	if err := be.T.Wait(); err != nil {
+	internal.GlobalState.T.Kill(nil)
+	if err := internal.GlobalState.T.Wait(); err != nil {
 		internal.Log.Warn("Workers Reported Error: %s", err)
 	}
-	
+
 	internal.Log.Warn("Got Shutdown Signal %s", s)
 	cache.Shutdown()
 	natsserver.Shutdown()
 	os.Exit(0)
 }
 
+func (wd *Worker) Run() error {
+	wd.Log.Trace("Worker Started")
+	rnsServer, err := rns.NewRNSServer(wd, wd.Conn, wd.Log.New("RNSServer"))
+	if err != nil {
+		wd.Log.Warn("NewRNSServer Failed: %s", err)
+		return err
+	}
 
-
-
-func (wd *WorkerData) Run() error {
 	for {
 		var ctx context.Context
 		ctx, wd.cancel = context.WithCancel(context.Background())
-		netctx, _ := context.WithTimeout(ctx, 1*time.Second)
+		var msg *nats.Msg
 		select {
-		case <-wd.Be.T.Dying():
+		case <-internal.GlobalState.T.Dying():
 			wd.Log.Warn("Killing Worker")
 			wd.cancel()
 			return nil
-		default:
+		case msg = <-internal.GlobalState.ClientCommand:
 		}
-		//wd.Be.Mx.Lock()
-		msg, err := wd.Be.BuCommands.NextMsgWithContext(netctx)
-		//wd.Be.Mx.Unlock()
-		if err != nil {
-			if !errors.Is(err, context.DeadlineExceeded) {
-				wd.Log.Error("NextMsg Failed: Error: %s %t", err, err)
-				return err
-			}
+		jobctx, _ := context.WithTimeout(ctx, 120*time.Second)
+		start := time.Now()
+
+		if err := rnsServer.ProcessServerMsg(jobctx, msg); err != nil {
+			wd.Log.Warn("Process Client Message Failed: %s", err)
 			continue
 		}
-		if msg != nil {
-			jobctx, _ := context.WithTimeout(ctx, 120*time.Second)
-			wd.Log.Info("Message: %s %s", msg.Subject, msg.Sub.Queue)
-			start := time.Now()
-
-			log := func(msg string, args ...interface{}) {
-				wd.Log.Info(msg, args...)
-			}
-
-			msg, err := protocol.ChunkReadRequestMsgWithContext(jobctx, wd.Be.Conn, msg, log)
-			if err != nil {
-				wd.Log.Warn("ChunkedRead Failed: %s", err)
-				continue
-			}
-
-			operation := msg.Header.Get("X-RNS-OP")
-			switch operation {
-			case "open":
-				var oo protocol.OpenOp
-				or := protocol.OpenResult{Ok: false}
-
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &oo); err != nil {
-					wd.Log.Warn("Decode Failed: %s", err)
-				}
-
-				or.Ok, err = wd.OpenRepo(oo)
-				if err != nil {
-					or.Ok = false
-					wd.Log.Warn("OpenOp: Error: %s", err)
-				}
-
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, or)
-				if err != nil {
-					wd.Log.Warn("Encode Failed: %s", wd.ID, err)
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkReplyRequestMsgWithContext Failed: %s", err)
-				}
-			case "stat":
-				var so protocol.StatOp
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &so); err != nil {
-					return errors.Wrap(err, "Decode Failed")
-				}
-
-				fi, err := wd.Stat(so)
-				var sr protocol.StatResult
-				if err != nil {
-					wd.Log.Warn("Stat: Error: %s\n", err)
-					sr.Ok = false
-				} else {
-					sr.Ok = true
-					sr.Size = fi.Size()
-					sr.Name = fi.Name()
-				}
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, sr)
-				if err != nil {
-					return errors.Wrap(err, "Encode Failed")
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkReplyRequestMsgWithContext Failed: %s", err)
-				}
-			case "mkdir":
-
-				var mo protocol.MkdirOp
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &mo); err != nil {
-					return errors.Wrap(err, "Decode Failed")
-				}
-
-				var mr protocol.MkdirResult
-				err := wd.Mkdir(mo)
-				if err != nil {
-					wd.Log.Warn("Mkdir: Error: %s", err)
-					mr.Ok = false
-				} else {
-					mr.Ok = true
-				}
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, mr)
-				if err != nil {
-					return errors.Wrap(err, "Encode Failed")
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkReplyRequestMsgWithContext Failed: %s", err)
-				}
-			case "save":
-				var so protocol.SaveOp
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &so); err != nil {
-					return errors.Wrap(err, "Decode Failed")
-				}
-
-				var sr protocol.SaveResult
-				err := wd.Save(so)
-				if err != nil {
-					wd.Log.Warn("Save: Error: %s", err)
-					sr.Ok = false
-				} else {
-					sr.Ok = true
-				}
-				wd.Log.Warn("Save Result: %+v", sr)
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, sr)
-				wd.Log.Warn("Reply is %d", len(replymsg.Data))
-				if err != nil {
-					return errors.Wrap(err, "Encode Failed")
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkSendReplyMsgWithContext Failed: %s", err)
-				}
-			case "list":
-				var lo protocol.ListOp
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &lo); err != nil {
-					return errors.Wrap(err, "Decode Failed")
-				}
-
-				var lr protocol.ListResult
-				lr, err = wd.List(lo)
-				if err != nil {
-					wd.Log.Warn("List: Error: %s", err)
-					lr.Ok = false
-				} else {
-					lr.Ok = true
-				}
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, lr)
-				if err != nil {
-					return errors.Wrap(err, "Encode Failed")
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkReplyRequestMsgWithContext Failed: %s", err)
-				}
-			case "load":
-				var lo protocol.LoadOp
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &lo); err != nil {
-					return errors.Wrap(err, "Decode Failed")
-				}
-
-				var lr protocol.LoadResult
-				lr, err = wd.Load(lo)
-				if err != nil {
-					wd.Log.Warn("List: Error: %s", err)
-					lr.Ok = false
-				} else {
-					lr.Ok = true
-				}
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, lr)
-				if err != nil {
-					return errors.Wrap(err, "Encode Failed")
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkReplyRequestMsgWithContext Failed: %s", err)
-				}
-			case "remove":
-				var ro protocol.RemoveOp
-				if err := wd.Be.Enc.Decode(msg.Subject, msg.Data, &ro); err != nil {
-					return errors.Wrap(err, "Decode Failed")
-				}
-
-				var rr protocol.RemoveResult
-				rr, err = wd.Remove(ro)
-				if err != nil {
-					wd.Log.Warn("List: Error: %s", err)
-					rr.Ok = false
-				} else {
-					rr.Ok = true
-				}
-				replymsg := protocol.NewRNSMsg(msg.Reply)
-				replymsg.Data, err = wd.Be.Enc.Encode(msg.Reply, rr)
-				if err != nil {
-					return errors.Wrap(err, "Encode Failed")
-				}
-				if err = protocol.ChunkSendReplyMsgWithContext(ctx, wd.Be.Conn, msg, replymsg, log); err != nil {
-					wd.Log.Warn("ChunkReplyRequestMsgWithContext Failed: %s", err)
-				}
-			}
-			wd.Log.Info("Command %s Took %s", operation, time.Since(start))
-		}
+		wd.Log.Info("Command Took %s", time.Since(start))
 	}
 	return nil
 }
 
-func (wd *WorkerData) OpenRepo(oo protocol.OpenOp) (bool, error) {
-	fs, err := localfs.FSStat(oo.Bucket)
-	if err != nil {
-		return false, errors.New("Failed to Open Repository")
-	}
-	return fs.IsDir(), nil
+func (wd *Worker) LookupClient(clientid string) (rns.Client, error) {
+	return client.Find(clientid)
 }
 
-func (wd *WorkerData) Stat(so protocol.StatOp) (fs.FileInfo, error) {
-	fs, err := localfs.FSStat(path.Join(so.Bucket, so.Filename))
+func (wd *Worker) Open(ctx context.Context, oo rns.OpenRepoOp) (rns.OpenRepoResult, rns.Client, error) {
+	_, err := localfs.FSStat(oo.Bucket)
+	or := rns.OpenRepoResult{}
 	if err != nil {
-		return nil, errors.Wrap(err, "Stat")
+		or.Err = errors.New("Repository Not Found")
+		return or, rns.Client{}, errors.New("Failed to Open Repository")
 	}
-	return fs, nil
+
+	/* create a new Client */
+	rnsclient, err := client.Create(oo)
+	if err != nil {
+		return or, rns.Client{}, errors.Wrap(err, "ClientCreate")
+	}
+	or.Ok = true
+	or.ClientID = rnsclient.ClientID
+
+	return or, rnsclient, nil
 }
-func (wd *WorkerData) Mkdir(mo protocol.MkdirOp) error {
-	path := path.Join(mo.Bucket, mo.Dir)
+
+func (wd *Worker) Stat(ctx context.Context, rnsclient rns.Client, so rns.StatOp) (rns.StatResult, error) {
+	fs, err := localfs.FSStat(path.Join(rnsclient.Bucket, so.Filename))
+	if err != nil {
+		return rns.StatResult{Ok: false}, errors.Wrap(err, "Stat")
+	}
+	sr := rns.StatResult{
+		Ok:   true,
+		Name: fs.Name(),
+		Size: fs.Size(),
+	}
+	return sr, nil
+}
+func (wd *Worker) Mkdir(ctx context.Context, rnsclient rns.Client, mo rns.MkdirOp) (rns.MkdirResult, error) {
+	path := path.Join(rnsclient.Bucket, mo.Dir)
 	if err := localfs.FSMkDir(path); err != nil {
-		return err
+		return rns.MkdirResult{Ok: false}, errors.Wrap(err, "Mkdir")
 	}
-	return nil
+	return rns.MkdirResult{Ok: true}, nil
 }
 
-func (wd *WorkerData) Save(so protocol.SaveOp) error {
-	path := path.Join(so.Bucket, so.Dir, so.Name)
-	len, err := localfs.FSSave(path, &so.Data, so.Offset)
+func (wd *Worker) Save(ctx context.Context, rnsclient rns.Client, so rns.SaveOp) (rns.SaveResult, error) {
+	path := path.Join(rnsclient.Bucket, so.Dir, so.Name)
+	len, err := localfs.FSSave(path, &so.Data)
 	if err != nil {
-		return err
+		return rns.SaveResult{Ok: false}, errors.Wrap(err, "Save")
 	}
-	if len != so.PacketSize {
-		return errors.New("Packetsize != Writtensize")
+	if len != int(so.Filesize) {
+		return rns.SaveResult{Ok: false}, errors.New("Packetsize != Writtensize")
 	}
-	return nil
+	return rns.SaveResult{Ok: true}, nil
 }
 
-func (wd *WorkerData) List(lo protocol.ListOp) (protocol.ListResult, error) {
-	var result protocol.ListResult
-	fi, err := localfs.FSListFiles(path.Join(lo.Bucket, lo.BaseDir), lo.SubDir)
+func (wd *Worker) List(ctx context.Context, rnsclient rns.Client, lo rns.ListOp) (rns.ListResult, error) {
+	var result rns.ListResult
+	fi, err := localfs.FSListFiles(path.Join(rnsclient.Bucket, lo.BaseDir), lo.Recurse)
 	if err != nil {
-		return protocol.ListResult{Ok: false}, errors.Wrap(err, "ListFiles")
+		return rns.ListResult{Ok: false}, errors.Wrap(err, "List")
 	}
 	result.Ok = true
 	result.FI = fi
 	return result, nil
 }
 
-func (wd *WorkerData) Load(lo protocol.LoadOp) (protocol.LoadResult, error) {
-	var result protocol.LoadResult
-	rd, err := localfs.FSLoadFile(path.Join(lo.Bucket, lo.Dir, lo.Name))
+func (wd *Worker) Load(ctx context.Context, rnsclient rns.Client, lo rns.LoadOp) (rns.LoadResult, error) {
+	var result rns.LoadResult
+	rd, err := localfs.FSLoadFile(path.Join(rnsclient.Bucket, lo.Dir, lo.Name))
 	if err != nil {
-		return protocol.LoadResult{Ok: false}, errors.Wrap(err, "LoadFile")
+		return rns.LoadResult{Ok: false}, errors.Wrap(err, "Load")
 	}
 	defer rd.Close()
 	if lo.Offset > 0 {
 		_, err = rd.Seek(lo.Offset, 0)
 		if err != nil {
-			return protocol.LoadResult{Ok: false}, errors.Wrap(err, "Seek")
+			return rns.LoadResult{Ok: false}, errors.Wrap(err, "Seek")
 		}
 	}
 	if lo.Length > 0 {
 		result.Data = make([]byte, lo.Length)
 		len, err := rd.Read(result.Data)
 		if err != nil {
-			return protocol.LoadResult{Ok: false}, errors.Wrap(err, "Read")
+			return rns.LoadResult{Ok: false}, errors.Wrap(err, "Read")
 		}
 		if len != lo.Length {
-			return protocol.LoadResult{Ok: false}, errors.Errorf("Requested Length %d != Actual Length %d", lo.Length, len)
+			return rns.LoadResult{Ok: false}, errors.Errorf("Requested Length %d != Actual Length %d", lo.Length, len)
 		}
 	} else {
 		result.Data, err = io.ReadAll(rd)
 		if err != nil {
-			return protocol.LoadResult{Ok: false}, errors.Wrap(err, "ReadAll")
+			return rns.LoadResult{Ok: false}, errors.Wrap(err, "ReadAll")
 		}
-	}
-	//fmt.Printf("%+v\n", result)
-	return result, nil
-}
-
-func (wd *WorkerData) Remove(ro protocol.RemoveOp) (protocol.RemoveResult, error) {
-	var result protocol.RemoveResult
-	if err := localfs.FSRemove(path.Join(ro.Bucket, ro.Dir, ro.Name)); err != nil {
-		return protocol.RemoveResult{Ok: false}, errors.Wrap(err, "FSRemove")
 	}
 	result.Ok = true
 	return result, nil
+}
+
+func (wd *Worker) Remove(ctx context.Context, rnsclient rns.Client, ro rns.RemoveOp) (rns.RemoveResult, error) {
+	var result rns.RemoveResult
+	if err := localfs.FSRemove(path.Join(rnsclient.Bucket, ro.Dir, ro.Name)); err != nil {
+		return rns.RemoveResult{Ok: false}, errors.Wrap(err, "Remove")
+	}
+	result.Ok = true
+	return result, nil
+}
+
+func (wd *Worker) Close(ctx context.Context, rnsclient rns.Client, co rns.CloseOp) (rns.CloseResult, error) {
+	if err := client.Remove(rnsclient.ClientID); err != nil {
+		wd.Log.Warn("Can't Find Client %s", rnsclient.ClientID)
+	}
+	/* always return success */
+	return rns.CloseResult{Ok: true}, nil
 }

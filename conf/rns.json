@@ -1,5 +1,5 @@
 {
-  "loglevel": 2,
+  "loglevel": 0,
   "authtype": "username",
   "nats": {
     "workers": [
@@ -28,7 +28,7 @@
     ]
   },
   "worker": {
-    "number": 50,
+    "number": 5,
     "connecturl": "nats://localhost:4222/",
     "nkey": "asdfasdf",
     "credfile": "/home/fish/.nkeys/creds/Operator/Backup/restic.creds",

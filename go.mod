@@ -4,9 +4,10 @@ go 1.17
 
 require (
 	github.com/Fishwaldo/go-logadapter v0.0.2
+	github.com/Fishwaldo/restic-nats v0.0.1-rc1
 	github.com/buraksezer/olric v0.4.0
 	github.com/nats-io/nats-server/v2 v2.6.1
-	github.com/nats-io/nats.go v1.12.3
+	github.com/nats-io/nats.go v1.13.0
 	github.com/pkg/errors v0.9.1
 	github.com/spf13/cobra v1.2.1
 	github.com/spf13/viper v1.9.0
@@ -60,4 +61,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace github.com/Fishwaldo/restic-nats-server/protocol => /home/fish/restic-nats-server/protocol
+//replace github.com/Fishwaldo/restic-nats => ../restic-nats

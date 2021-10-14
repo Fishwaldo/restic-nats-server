@@ -72,7 +72,7 @@ func GetInternalWorkerURL() (path *url.URL, err error) {
 	if internalWorkerCred.Username == "" || internalWorkerCred.Password == "" {
 		return nil, errors.New("Internal User Credentials are empty?")
 	}
-	return url.Parse(fmt.Sprintf("nats://%s:%s@localhost:%d/backup/", internalWorkerCred.Username, internalWorkerCred.Password, 4222))
+	return url.Parse(fmt.Sprintf("nats://%s:%s@localhost:%d/", internalWorkerCred.Username, internalWorkerCred.Password, 4222))
 }
 
 func Start() {

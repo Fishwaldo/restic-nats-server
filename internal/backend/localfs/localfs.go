@@ -7,7 +7,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/Fishwaldo/restic-nats-server/protocol"
+	"github.com/Fishwaldo/restic-nats"
 
 	"github.com/pkg/errors"
 )
@@ -26,7 +26,7 @@ func FSMkDir(dir string) (error) {
 	return os.MkdirAll(path.Join(pwd, "repo", dir), 0700)
 }
 
-func FSSave(file string, data *[]byte, offset int64) (int, error) {
+func FSSave(file string, data *[]byte) (int, error) {
 	pwd, _ := os.Getwd()
 	filename := path.Join(pwd, "repo", file)
 	tmpname := filepath.Base(filename) + "-tmp-"
@@ -58,7 +58,7 @@ func FSSave(file string, data *[]byte, offset int64) (int, error) {
 	return len, nil
 }
 
-func FSListFiles(dir string, recursive bool) ([]protocol.FileInfo, error) {
+func FSListFiles(dir string, recursive bool) ([]rns.FileInfo, error) {
 	pwd, _ := os.Getwd()
 	finaldir := path.Join(pwd, "repo", dir)	
 
@@ -73,7 +73,7 @@ func FSListFiles(dir string, recursive bool) ([]protocol.FileInfo, error) {
 		return nil, err
 	}
 
-	var result []protocol.FileInfo
+	var result []rns.FileInfo
 	for _, fi := range sub {
 		if fi.IsDir() {
 			/* dont' recursive more than 1 level */
@@ -84,10 +84,10 @@ func FSListFiles(dir string, recursive bool) ([]protocol.FileInfo, error) {
 			result = append(result, test...)
 		}
 		if fi.Name() != "" {
-			result = append(result, protocol.FileInfo{Name: fi.Name(), Size: fi.Size()})
+			result = append(result, rns.FileInfo{Name: fi.Name(), Size: fi.Size()})
 		}
 	}
-	return result, err
+	return result, nil
 }
 
 func FSLoadFile(filename string) (*os.File, error) {

@@ -5,7 +5,7 @@
 
 ## Sub Packages
 
-* [cmd](./cmd)
+* [cache](./cache)
 
 * [protocol](./protocol)
 
