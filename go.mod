@@ -5,7 +5,7 @@ go 1.17
 require (
 	github.com/Fishwaldo/go-logadapter v0.0.2
 	github.com/Fishwaldo/restic-nats v0.0.1-rc2
-	github.com/buraksezer/olric v0.4.0
+	github.com/buraksezer/olric v0.4.1
 	github.com/nats-io/nats-server/v2 v2.6.6
 	github.com/nats-io/nats.go v1.13.1-0.20211122170419-d7c1d78a50fc
 	github.com/pkg/errors v0.9.1
