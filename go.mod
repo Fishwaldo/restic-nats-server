@@ -9,7 +9,7 @@ require (
 	github.com/nats-io/nats-server/v2 v2.7.0
 	github.com/nats-io/nats.go v1.13.1-0.20211122170419-d7c1d78a50fc
 	github.com/pkg/errors v0.9.1
-	github.com/spf13/cobra v1.3.0
+	github.com/spf13/cobra v1.5.0
 	github.com/spf13/viper v1.10.1
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
